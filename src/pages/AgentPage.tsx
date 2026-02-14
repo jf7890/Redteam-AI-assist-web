@@ -1,180 +1,216 @@
-import { useMemo, useState } from "react";
-import { makeAgentClient } from "../api/agent";
-import { makeAiClient } from "../api/ai";
-import { JsonPanel } from "../components/JsonPanel";
-import { useAppStore, parseTargetsCsv } from "../state/useAppStore";
+    import React, { useMemo, useState } from "react";
+    import { makeAiClient } from "../api/ai";
+    import { makeAgentClient } from "../api/agent";
+    import type { SessionRecord } from "../api/types";
+    import { JsonPanel } from "../components/JsonPanel";
+    import { useAppStore, parseTargetsCsv } from "../state/useAppStore";
 
-export function AgentPage() {
-  const { config, sessionId, setSession, setSessionError, setAgentError, agentError, lastAgentResult, setLastAgentResult } = useAppStore();
-
-  const agent = useMemo(() => makeAgentClient(config.localAgentUrl), [config.localAgentUrl]);
-  const ai = useMemo(() => makeAiClient(config.aiBaseUrl), [config.aiBaseUrl]);
-
-  const [enableNmap, setEnableNmap] = useState(true);
-  const [fullPort, setFullPort] = useState(false);
-  const [verbose, setVerbose] = useState(true);
-  const [once, setOnce] = useState(true);
-
-  const [targetsCsv, setTargetsCsv] = useState(config.defaultTargetsCsv);
-
-  const [busy, setBusy] = useState<null | "recon" | "history" | "refresh">(null);
-
-  const agentDownloadUrl = `${config.aiBaseUrl.replace(/\/+$/, "")}/kali-telemetry-agent.py`;
-
-  async function autoRecon() {
-    if (!sessionId) return;
-    setBusy("recon");
-    setAgentError(undefined);
-
-    try {
-      const res = await agent.autoRecon({
-        session_id: sessionId,
-        base_url: config.aiBaseUrl,
-        targets: parseTargetsCsv(targetsCsv),
-        enable_nmap: enableNmap,
-        full_port: fullPort,
-        once,
-        verbose
-      });
-
-      setLastAgentResult(res);
-    } catch (e: any) {
-      setAgentError(e?.message || "Auto recon failed");
-    } finally {
-      setBusy(null);
+    function splitLines(text: string): string[] {
+      return text
+        .split(/\r?\n/)
+        .map((x) => x.trim())
+        .filter(Boolean);
     }
-  }
 
-  async function ingestHistory() {
-    if (!sessionId) return;
-    setBusy("history");
-    setAgentError(undefined);
+    export function AgentPage() {
+      const cfg = useAppStore((s) => s.config);
+      const sessionId = useAppStore((s) => s.sessionId);
 
-    try {
-      const res = await agent.ingestHistory({
-        session_id: sessionId,
-        base_url: config.aiBaseUrl,
-        once,
-        verbose
-      });
+      const ai = useMemo(() => makeAiClient(cfg.aiBaseUrl), [cfg.aiBaseUrl]);
+      const agent = useMemo(() => makeAgentClient(cfg.localAgentUrl), [cfg.localAgentUrl]);
 
-      setLastAgentResult(res);
-    } catch (e: any) {
-      setAgentError(e?.message || "Ingest history failed");
-    } finally {
-      setBusy(null);
-    }
-  }
+      const [targetsCsv, setTargetsCsv] = useState(cfg.defaultTargetsCsv);
+      const [enableNmap, setEnableNmap] = useState(false);
+      const [fullPort, setFullPort] = useState(false);
+      const [verbose, setVerbose] = useState(true);
+      const [once, setOnce] = useState(true);
 
-  async function refreshSession() {
-    if (!sessionId) return;
-    setBusy("refresh");
-    setSessionError(undefined);
-    try {
-      const s = await ai.getSession(sessionId);
-      setSession(s);
-    } catch (e: any) {
-      setSessionError(e?.message || "Failed to refresh session");
-    } finally {
-      setBusy(null);
-    }
-  }
+      const [historyFiles, setHistoryFiles] = useState("");
+      const [agentResp, setAgentResp] = useState<any>(null);
 
-  return (
-    <div className="page">
-      <h2>Telemetry / Local Agent</h2>
+      const [session, setSession] = useState<SessionRecord | null>(null);
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState<string>("");
 
-      <div className="panel">
-        <div className="panelHeader">
-          <div className="panelTitle">Download Agent</div>
-        </div>
-        <p className="muted">
-          The agent is hosted by the AI server (expected path: <code>/kali-telemetry-agent.py</code>). If your deployment uses a different path, adjust accordingly.
-        </p>
-        <a className="btn" href={agentDownloadUrl} target="_blank" rel="noreferrer">
-          Download kali-telemetry-agent.py
-        </a>
-      </div>
+      const downloadUrl = ai.kaliAgentDownloadUrl();
 
-      {!sessionId ? <div className="warningBox">Set a SESSION_ID in Setup/Session page before running auto tools.</div> : null}
+      async function refreshSession() {
+        if (!sessionId) return;
+        setErr("");
+        setBusy(true);
+        try {
+          const s = await ai.getSession(sessionId);
+          setSession(s);
+        } catch (e: any) {
+          setErr(e?.message || String(e));
+        } finally {
+          setBusy(false);
+        }
+      }
 
-      <div className="grid2">
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Auto Recon</div>
+      async function doAutoRecon() {
+        if (!sessionId) {
+          setErr("Missing SESSION_ID. Go to Session page → Create/Load session first.");
+          return;
+        }
+        setErr("");
+        setBusy(true);
+        try {
+          const resp = await agent.autoRecon({
+            session_id: sessionId,
+            base_url: cfg.aiBaseUrl,
+            targets: parseTargetsCsv(targetsCsv),
+            enable_nmap: enableNmap,
+            full_port: fullPort,
+            once,
+            verbose
+          });
+          setAgentResp(resp);
+        } catch (e: any) {
+          setErr(e?.message || String(e));
+          setAgentResp(null);
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function doIngestHistory() {
+        if (!sessionId) {
+          setErr("Missing SESSION_ID. Go to Session page → Create/Load session first.");
+          return;
+        }
+        setErr("");
+        setBusy(true);
+        try {
+          const resp = await agent.ingestHistory({
+            session_id: sessionId,
+            base_url: cfg.aiBaseUrl,
+            history_files: splitLines(historyFiles),
+            once,
+            verbose
+          });
+          setAgentResp(resp);
+        } catch (e: any) {
+          setErr(e?.message || String(e));
+          setAgentResp(null);
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      return (
+        <>
+          <h2>Telemetry / Agent</h2>
+
+          {err && <div className="error">{err}</div>}
+
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Download agent (CLI script from AI server)</h3>
+            <div className="muted">
+              Backend Redteam-AI-assist có sẵn script <span className="mono">kali_telemetry_agent.py</span> để auto-ingest shell history
+              (không phải HTTP agent). Nút bên dưới chỉ tải file về máy đang mở browser.
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+              <a href={downloadUrl} target="_blank" rel="noreferrer">
+                <button className="secondary">Download kali-telemetry-agent.py</button>
+              </a>
+              <button className="secondary" onClick={refreshSession} disabled={busy || !sessionId}>
+                Refresh Session
+              </button>
+            </div>
+
+            <div className="muted" style={{ marginTop: 12 }}>
+              CLI quickstart (chạy trên Kali):
+              <pre className="mono" style={{ marginTop: 8 }}>
+{`curl -fsSL ${downloadUrl} -o /tmp/kali_telemetry_agent.py
+BASE_URL=${cfg.aiBaseUrl} SESSION_ID=${sessionId || "<SESSION_ID>"} python /tmp/kali_telemetry_agent.py --poll-interval 5 --verbose`}
+              </pre>
+            </div>
           </div>
 
-          <label className="field">
-            <div className="fieldLabel">Targets (CSV)</div>
-            <input className="input" value={targetsCsv} onChange={(e) => setTargetsCsv(e.target.value)} />
-          </label>
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Local Agent HTTP API (localhost:8787)</h3>
+            <div className="muted">
+              Các nút dưới đây yêu cầu bạn có Local Agent HTTP API (ngoài repo UI) chạy trên{" "}
+              <span className="mono">{cfg.localAgentUrl}</span>. Agent sẽ chạy tool (nmap/whatweb/...) và tự POST telemetry về AI server.
+            </div>
 
-          <div className="row">
-            <label className="checkbox">
-              <input type="checkbox" checked={enableNmap} onChange={(e) => setEnableNmap(e.target.checked)} /> Enable nmap
-            </label>
-            <label className="checkbox">
-              <input type="checkbox" checked={fullPort} onChange={(e) => setFullPort(e.target.checked)} /> Full port
-            </label>
-          </div>
+            <div className="row" style={{ marginTop: 12 }}>
+              <div>
+                <label>Targets (CSV)</label>
+                <input value={targetsCsv} onChange={(e) => setTargetsCsv(e.target.value)} />
+                <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="checkbox" checked={enableNmap} onChange={(e) => setEnableNmap(e.target.checked)} />
+                    enable_nmap
+                  </label>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={fullPort}
+                      onChange={(e) => setFullPort(e.target.checked)}
+                      disabled={!enableNmap}
+                    />
+                    full_port
+                  </label>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="checkbox" checked={once} onChange={(e) => setOnce(e.target.checked)} />
+                    once
+                  </label>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} />
+                    verbose
+                  </label>
+                </div>
 
-          <div className="row">
-            <label className="checkbox">
-              <input type="checkbox" checked={once} onChange={(e) => setOnce(e.target.checked)} /> Once
-            </label>
-            <label className="checkbox">
-              <input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} /> Verbose
-            </label>
-          </div>
+                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                  <button onClick={doAutoRecon} disabled={busy}>
+                    Auto Recon (via Local Agent)
+                  </button>
+                </div>
+              </div>
 
-          <button className="btn" onClick={autoRecon} disabled={!sessionId || busy !== null}>
-            {busy === "recon" ? "Running…" : "Auto Recon (HEAD)"}
-          </button>
-
-          <p className="muted">
-            The Local Agent will run tools on the client and POST telemetry to <code>{config.aiBaseUrl}</code> at <code>/v1/sessions/{sessionId}/events</code>.
-          </p>
-        </div>
-
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Ingest History</div>
-          </div>
-
-          <p className="muted">Reads shell / tool history on the client (agent side) and posts as telemetry events.</p>
-
-          <div className="row">
-            <label className="checkbox">
-              <input type="checkbox" checked={once} onChange={(e) => setOnce(e.target.checked)} /> Once
-            </label>
-            <label className="checkbox">
-              <input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} /> Verbose
-            </label>
-          </div>
-
-          <button className="btn" onClick={ingestHistory} disabled={!sessionId || busy !== null}>
-            {busy === "history" ? "Running…" : "Ingest History (once)"}
-          </button>
-
-          <div className="row">
-            <button className="btn btn-secondary" onClick={refreshSession} disabled={!sessionId || busy !== null}>
-              {busy === "refresh" ? "Refreshing…" : "Refresh Session"}
-            </button>
-          </div>
-
-          {agentError ? (
-            <div className="errorBox">
-              <b>Agent call failed.</b>
-              <div>{agentError}</div>
-              <div className="muted" style={{ marginTop: 8 }}>
-                If the agent is not running, start it on the client at <code>{config.localAgentUrl}</code> (bind to localhost) and enable CORS for this UI origin.
+              <div>
+                <label>History files (optional, one per line)</label>
+                <textarea
+                  value={historyFiles}
+                  onChange={(e) => setHistoryFiles(e.target.value)}
+                  placeholder="/home/kali/.zsh_history&#10;/home/kali/.bash_history"
+                />
+                <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                  <button onClick={doIngestHistory} disabled={busy}>
+                    Ingest History (via Local Agent)
+                  </button>
+                </div>
               </div>
             </div>
-          ) : null}
-        </div>
-      </div>
 
-      {lastAgentResult ? <JsonPanel title="Last agent response (raw)" data={lastAgentResult} /> : null}
-    </div>
-  );
-}
+            <div className="muted" style={{ marginTop: 12 }}>
+              Nếu bạn chưa có Local Agent HTTP API, UI sẽ báo lỗi connection. Đây là expected theo spec (agent là dependency ngoài).
+            </div>
+          </div>
+
+          {session && (
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Session snapshot</h3>
+              <div className="muted">
+                current_phase=<span className="mono">{session.current_phase}</span> · events=
+                <span className="mono">{session.events?.length ?? 0}</span> · updated=
+                <span className="mono">{new Date(session.updated_at).toLocaleString()}</span>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <JsonPanel value={session} />
+              </div>
+            </div>
+          )}
+
+          {agentResp && (
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Local Agent response (raw)</h3>
+              <JsonPanel value={agentResp} />
+            </div>
+          )}
+        </>
+      );
+    }

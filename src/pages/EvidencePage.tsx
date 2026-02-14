@@ -1,193 +1,228 @@
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { makeAiClient } from "../api/ai";
-import type { SessionEvent, SuggestRequest } from "../api/types";
+import type { ActivityEvent, EventType, SessionRecord, SuggestResponse } from "../api/types";
 import { JsonPanel } from "../components/JsonPanel";
 import { MarkdownPanel } from "../components/MarkdownPanel";
 import { useAppStore } from "../state/useAppStore";
 
-function toIsoNow() {
-  return new Date().toISOString();
+function formatTs(ts?: string) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+function eventTitle(e: ActivityEvent) {
+  if (e.event_type === "command" && e.payload?.command) return e.payload.command;
+  if (e.event_type === "http" && e.payload?.url) return `${e.payload.method || "GET"} ${e.payload.url}`;
+  if (e.event_type === "note" && (e.payload?.note || e.payload?.text)) return String(e.payload.note || e.payload.text);
+  return "";
 }
 
 export function EvidencePage() {
-  const { config, sessionId, session, setSession, sessionError, setSessionError, addLocalNote, localNotes } = useAppStore();
-  const ai = useMemo(() => makeAiClient(config.aiBaseUrl), [config.aiBaseUrl]);
+  const cfg = useAppStore((s) => s.config);
+  const sessionId = useAppStore((s) => s.sessionId);
 
-  const [noteText, setNoteText] = useState("");
-  const [busy, setBusy] = useState<null | "note" | "refresh" | "report">(null);
-  const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
-  const [reportRaw, setReportRaw] = useState<any>(null);
-  const [reportError, setReportError] = useState<string | null>(null);
+  const ai = useMemo(() => makeAiClient(cfg.aiBaseUrl), [cfg.aiBaseUrl]);
 
-  async function refreshSession() {
-    if (!sessionId) return;
-    setBusy("refresh");
-    setSessionError(undefined);
+  const [note, setNote] = useState("");
+  const [session, setSession] = useState<SessionRecord | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string>("");
+
+  const [filter, setFilter] = useState<string>("all");
+
+  const [reportResp, setReportResp] = useState<SuggestResponse | null>(null);
+
+  async function refresh() {
+    if (!sessionId) {
+      setErr("Missing SESSION_ID. Go to Session page → Create/Load session first.");
+      return;
+    }
+    setErr("");
+    setBusy(true);
     try {
       const s = await ai.getSession(sessionId);
       setSession(s);
     } catch (e: any) {
-      setSessionError(e?.message || "Failed to refresh session");
+      setErr(e?.message || String(e));
+      setSession(null);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
   async function addNote() {
-    if (!sessionId) return;
-    const text = noteText.trim();
-    if (!text) return;
+    if (!sessionId) {
+      setErr("Missing SESSION_ID. Go to Session page → Create/Load session first.");
+      return;
+    }
+    if (!note.trim()) return;
 
-    setBusy("note");
-    setSessionError(undefined);
-
-    // Keep a local copy for convenience (even if server doesn't expose an events list).
-    addLocalNote(text);
-
+    setErr("");
+    setBusy(true);
     try {
-      const ev: SessionEvent = {
-        event_type: "note",
-        timestamp: toIsoNow(),
-        payload: { text }
-      };
-
-      await ai.addEvents(sessionId, { events: [ev] });
-      setNoteText("");
+      const updated = await ai.ingestEvents(sessionId, {
+        events: [
+          {
+            event_type: "note",
+            payload: {
+              note: note.trim(),
+              source: "webui"
+            }
+          }
+        ]
+      });
+      setSession(updated);
+      setNote("");
     } catch (e: any) {
-      setSessionError(e?.message || "Failed to post note event");
+      setErr(e?.message || String(e));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  async function getReportTemplate() {
-    if (!sessionId) return;
-    setBusy("report");
-    setReportError(null);
-
+  async function fetchReportTemplate() {
+    if (!sessionId) {
+      setErr("Missing SESSION_ID. Go to Session page → Create/Load session first.");
+      return;
+    }
+    setErr("");
+    setBusy(true);
     try {
-      const body: SuggestRequest = {
-        memory_mode: "default",
-        history_window: 50,
-        rag_focus: "report"
-      };
-
-      const res = await ai.suggest(sessionId, body);
-      setReportRaw(res);
-
-      // Best-effort: try to locate a markdown-ish field
-      const markdown =
-        (typeof res?.report === "string" && res.report) ||
-        (typeof res?.report_template === "string" && res.report_template) ||
-        (typeof res?.template === "string" && res.template) ||
-        (typeof res?.output === "string" && res.output) ||
-        null;
-
-      setReportMarkdown(markdown);
+      const r = await ai.suggest(sessionId, { rag_focus: "report" });
+      setReportResp(r);
     } catch (e: any) {
-      setReportError(e?.message || "Failed to get report template");
+      setErr(e?.message || String(e));
+      setReportResp(null);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  const sessionEvents = Array.isArray(session?.events) ? session!.events : [];
+  const events = (session?.events || []).slice().sort((a, b) => {
+    const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return tb - ta; // newest first
+  });
+
+  const filtered = filter === "all" ? events : events.filter((e) => e.event_type === filter);
 
   return (
-    <div className="page">
-      <h2>Evidence / Notes / Report</h2>
+    <>
+      <h2>Evidence / Notes</h2>
 
-      {!sessionId ? <div className="warningBox">Set a SESSION_ID in Setup/Session page first.</div> : null}
+      {err && <div className="error">{err}</div>}
 
-      <div className="grid2">
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Add Note (POST events)</div>
+      <div className="card">
+        <div className="row">
+          <div>
+            <label>Add note</label>
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Write observation / evidence note..." />
+            <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+              <button onClick={addNote} disabled={busy || !note.trim()}>
+                Add note (POST /events)
+              </button>
+              <button className="secondary" onClick={refresh} disabled={busy}>
+                Refresh Session
+              </button>
+            </div>
           </div>
-
-          <label className="field">
-            <div className="fieldLabel">Note</div>
-            <textarea className="textarea" rows={4} value={noteText} onChange={(e) => setNoteText(e.target.value)} placeholder="What did you try? What did you observe? URLs, creds, findings…" />
-          </label>
-
-          <div className="row">
-            <button className="btn" onClick={addNote} disabled={!sessionId || busy !== null || !noteText.trim()}>
-              {busy === "note" ? "Posting…" : "Add note"}
-            </button>
-            <button className="btn btn-secondary" onClick={refreshSession} disabled={!sessionId || busy !== null}>
-              {busy === "refresh" ? "Refreshing…" : "Refresh session"}
-            </button>
+          <div>
+            <label>Report template</label>
+            <div className="muted">
+              Nút này gọi <span className="mono">/suggest</span> với <span className="mono">rag_focus=report</span> rồi render
+              nội dung từ <span className="mono">retrieved_context</span>.
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+              <button className="secondary" onClick={fetchReportTemplate} disabled={busy || !sessionId}>
+                Export report template
+              </button>
+            </div>
           </div>
-
-          {sessionError ? <div className="errorBox">{sessionError}</div> : null}
-        </div>
-
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Report Template (rag_focus=report)</div>
-          </div>
-
-          <button className="btn" onClick={getReportTemplate} disabled={!sessionId || busy !== null}>
-            {busy === "report" ? "Generating…" : "Get report template"}
-          </button>
-
-          {reportError ? <div className="errorBox">{reportError}</div> : null}
-
-          {reportMarkdown ? <MarkdownPanel title="Report template (best-effort)" markdown={reportMarkdown} /> : null}
-
-          {reportRaw ? <JsonPanel title="Raw report suggest JSON" data={reportRaw} /> : null}
         </div>
       </div>
 
-      <div className="grid2">
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Timeline (best-effort)</div>
-          </div>
-
-          {sessionEvents.length === 0 ? (
-            <div className="muted">
-              No <code>session.events</code> found in <code>GET /v1/sessions/{sessionId}</code>.
-              <br />
-              The UI will still show notes you added locally below. If you need a full timeline, consider exposing an events list endpoint.
+      {reportResp && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Report template (retrieved_context)</h3>
+          {reportResp.retrieved_context?.length ? (
+            <div style={{ display: "grid", gap: 12 }}>
+              {reportResp.retrieved_context.map((c, idx) => (
+                <div key={idx} className="card" style={{ marginBottom: 0 }}>
+                  <div className="muted">
+                    <span className="mono">{c.source}</span> · score {c.score.toFixed(3)}
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <MarkdownPanel content={c.content} />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
-            <ol className="list">
-              {sessionEvents.map((ev, idx) => (
-                <li key={ev.event_id ?? idx} className="listItem">
-                  <div className="listTitle">
-                    {ev.event_type} <span className="muted">• {ev.timestamp ? new Date(ev.timestamp).toLocaleString() : "no timestamp"}</span>
-                  </div>
-                  <pre className="codeBlock">{JSON.stringify(ev.payload, null, 2)}</pre>
-                </li>
-              ))}
-            </ol>
+            <div className="muted">No retrieved context.</div>
           )}
-        </div>
-
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Notes entered from this UI (local)</div>
+          <div style={{ marginTop: 12 }}>
+            <div className="muted" style={{ marginBottom: 6 }}>Raw JSON</div>
+            <JsonPanel value={reportResp} />
           </div>
-
-          {localNotes.length === 0 ? (
-            <div className="muted">No local notes yet.</div>
-          ) : (
-            <ol className="list">
-              {localNotes.map((n) => (
-                <li key={n.id} className="listItem">
-                  <div className="listTitle">
-                    note <span className="muted">• {new Date(n.timestamp).toLocaleString()}</span>
-                  </div>
-                  <pre className="codeBlock" style={{ whiteSpace: "pre-wrap" }}>{n.text}</pre>
-                </li>
-              ))}
-            </ol>
-          )}
         </div>
+      )}
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Timeline events</h3>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <span className="muted">Filter:</span>
+          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="all">all</option>
+            <option value="command">command</option>
+            <option value="http">http</option>
+            <option value="scan">scan</option>
+            <option value="note">note</option>
+            <option value="system">system</option>
+          </select>
+
+          <span className="muted" style={{ marginLeft: "auto" }}>
+            events: <span className="mono">{events.length}</span>
+          </span>
+        </div>
+
+        {!session ? (
+          <div className="muted" style={{ marginTop: 10 }}>
+            (Chưa load session) Bấm <b>Refresh Session</b> để xem timeline.
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="muted" style={{ marginTop: 10 }}>No events.</div>
+        ) : (
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            {filtered.map((e) => (
+              <div key={e.event_id || Math.random()} className="card" style={{ marginBottom: 0 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                  <span className="pill">{e.event_type}</span>
+                  <span className="muted">{formatTs(e.timestamp)}</span>
+                  <span className="mono" style={{ fontSize: 12 }}>{e.event_id || ""}</span>
+                </div>
+                {eventTitle(e) && (
+                  <div style={{ marginTop: 8 }}>
+                    <b className="mono" style={{ fontSize: 13 }}>{eventTitle(e)}</b>
+                  </div>
+                )}
+                <div style={{ marginTop: 10 }}>
+                  <JsonPanel value={e.payload} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {session ? <JsonPanel title="Raw session JSON (if loaded)" data={session} /> : null}
-    </div>
+      {session && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Session (raw)</h3>
+          <JsonPanel value={session} />
+        </div>
+      )}
+    </>
   );
 }

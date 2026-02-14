@@ -1,15 +1,13 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Redteam‑AI‑Assist Web UI (Lab)</title>
+    <title>Redteam AI Assist – Student UI</title>
   </head>
   <body>
-    <!-- Runtime config (Docker will render /env.js from env.template.js).
-         In local dev, public/env.js exists as a harmless fallback. -->
+    <!-- Runtime config (Docker/Nginx will generate /env.js). -->
     <script src="/env.js"></script>
-
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

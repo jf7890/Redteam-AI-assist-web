@@ -1,66 +1,57 @@
-import { NavLink, Route, Routes } from "react-router-dom";
-import { StatusBanner } from "./components/StatusBanner";
+import React from "react";
+import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { useAppStore } from "./state/useAppStore";
 import { SetupPage } from "./pages/SetupPage";
 import { SessionPage } from "./pages/SessionPage";
 import { AgentPage } from "./pages/AgentPage";
 import { SuggestPage } from "./pages/SuggestPage";
 import { EvidencePage } from "./pages/EvidencePage";
-import { useAppStore } from "./state/useAppStore";
 
-function TopNav() {
+function Topbar() {
   const sessionId = useAppStore((s) => s.sessionId);
-
   return (
-    <header className="header">
-      <div className="brand">
-        <div className="brandTitle">Redteam‑AI‑Assist</div>
-        <div className="brandSub">Student Web UI (Lab)</div>
-      </div>
-
-      <nav className="nav">
-        <NavLink to="/" end className={({ isActive }) => (isActive ? "navLink active" : "navLink")}>
+    <div className="topbar">
+      <div className="brand">Redteam AI Assist · Student UI</div>
+      <div className="nav" style={{ flex: 1 }}>
+        <NavLink to="/setup" className={({ isActive }) => (isActive ? "active" : "")}>
           Setup
         </NavLink>
-        <NavLink to="/session" className={({ isActive }) => (isActive ? "navLink active" : "navLink")}>
+        <NavLink to="/session" className={({ isActive }) => (isActive ? "active" : "")}>
           Session
         </NavLink>
-        <NavLink to="/agent" className={({ isActive }) => (isActive ? "navLink active" : "navLink")}>
+        <NavLink to="/agent" className={({ isActive }) => (isActive ? "active" : "")}>
           Agent
         </NavLink>
-        <NavLink to="/suggest" className={({ isActive }) => (isActive ? "navLink active" : "navLink")}>
+        <NavLink to="/suggest" className={({ isActive }) => (isActive ? "active" : "")}>
           Suggest
         </NavLink>
-        <NavLink to="/evidence" className={({ isActive }) => (isActive ? "navLink active" : "navLink")}>
+        <NavLink to="/evidence" className={({ isActive }) => (isActive ? "active" : "")}>
           Evidence
         </NavLink>
-      </nav>
-
-      <div className="sessionChip" title="Current session id">
-        <span className="muted">SESSION:</span> <code>{sessionId || "—"}</code>
       </div>
-    </header>
+      <div className="muted" style={{ textAlign: "right" }}>
+        <div style={{ fontSize: 12 }}>SESSION</div>
+        <div className="mono" style={{ fontSize: 12 }}>{sessionId || "—"}</div>
+      </div>
+    </div>
   );
 }
 
-export function App() {
+export default function App() {
   return (
-    <div className="appShell">
-      <TopNav />
-      <StatusBanner />
-
-      <main className="main">
+    <div className="app-shell">
+      <Topbar />
+      <div className="container">
         <Routes>
-          <Route path="/" element={<SetupPage />} />
+          <Route path="/" element={<Navigate to="/setup" replace />} />
+          <Route path="/setup" element={<SetupPage />} />
           <Route path="/session" element={<SessionPage />} />
           <Route path="/agent" element={<AgentPage />} />
           <Route path="/suggest" element={<SuggestPage />} />
           <Route path="/evidence" element={<EvidencePage />} />
+          <Route path="*" element={<Navigate to="/setup" replace />} />
         </Routes>
-      </main>
-
-      <footer className="footer muted">
-        Lab-only UI. No authentication. Do not expose to public internet.
-      </footer>
+      </div>
     </div>
   );
 }

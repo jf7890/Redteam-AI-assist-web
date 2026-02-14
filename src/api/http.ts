@@ -1,72 +1,79 @@
-export type HttpErrorShape = {
-  message?: string;
-  detail?: string;
-  error?: string;
-};
-
 export class HttpError extends Error {
   status: number;
   url: string;
-  body: any;
+  bodyText?: string;
 
-  constructor(opts: { status: number; url: string; message: string; body: any }) {
-    super(opts.message);
-    this.name = "HttpError";
-    this.status = opts.status;
-    this.url = opts.url;
-    this.body = opts.body;
+  constructor(message: string, status: number, url: string, bodyText?: string) {
+    super(message);
+    this.status = status;
+    this.url = url;
+    this.bodyText = bodyText;
   }
+}
+
+async function parseJsonOrText(text: string): Promise<any> {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function readErrorMessage(res: Response, url: string): Promise<HttpError> {
+  const text = await res.text().catch(() => "");
+  const parsed = await parseJsonOrText(text);
+  const msg =
+    (parsed && typeof parsed === "object" && (parsed.detail || parsed.message)) ||
+    `${res.status} ${res.statusText}`;
+  return new HttpError(String(msg), res.status, url, text);
 }
 
 export async function httpJson<T>(
   url: string,
   opts: RequestInit & { timeoutMs?: number } = {}
 ): Promise<T> {
-  const { timeoutMs = 15000, ...init } = opts;
-
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
+  const { timeoutMs = 20000, ...init } = opts;
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
 
   try {
-    const res = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...(init.headers || {})
-      }
-    });
+    const headers: Record<string, string> = {};
+    if (init.body) headers["Content-Type"] = "application/json";
+    if (init.headers) Object.assign(headers, init.headers as any);
+
+    const res = await fetch(url, { ...init, headers, signal: ac.signal });
+
+    if (!res.ok) throw await readErrorMessage(res, url);
+
+    // Handle 204 No Content
+    if (res.status === 204) return null as unknown as T;
 
     const text = await res.text();
-    const body = text ? safeJsonParse(text) : null;
-
-    if (!res.ok) {
-      const msg =
-        (body as HttpErrorShape | null)?.detail ||
-        (body as HttpErrorShape | null)?.message ||
-        (body as HttpErrorShape | null)?.error ||
-        `${res.status} ${res.statusText}`;
-
-      throw new HttpError({ status: res.status, url, message: msg, body });
-    }
-
-    return body as T;
-  } catch (e: any) {
-    // AbortError -> nicer message
-    if (e?.name === "AbortError") {
-      throw new Error(`Request timeout after ${timeoutMs}ms`);
-    }
-    throw e;
+    const data = await parseJsonOrText(text);
+    return data as T;
   } finally {
     clearTimeout(t);
   }
 }
 
-function safeJsonParse(s: string): any {
+export async function httpVoid(
+  url: string,
+  opts: RequestInit & { timeoutMs?: number } = {}
+): Promise<void> {
+  const { timeoutMs = 20000, ...init } = opts;
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+
   try {
-    return JSON.parse(s);
-  } catch {
-    // If server returns plain text, wrap it.
-    return { message: s };
+    const headers: Record<string, string> = {};
+    if (init.body) headers["Content-Type"] = "application/json";
+    if (init.headers) Object.assign(headers, init.headers as any);
+
+    const res = await fetch(url, { ...init, headers, signal: ac.signal });
+    if (!res.ok) throw await readErrorMessage(res, url);
+    return;
+  } finally {
+    clearTimeout(t);
   }
 }

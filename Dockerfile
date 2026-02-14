@@ -1,8 +1,8 @@
 # Build stage
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+COPY package.json ./
+RUN npm install
 COPY . .
 RUN npm run build
 
@@ -10,14 +10,12 @@ RUN npm run build
 FROM nginx:1.27-alpine
 RUN apk add --no-cache gettext
 WORKDIR /usr/share/nginx/html
-
-# App assets
 COPY --from=build /app/dist ./
 
-# Nginx config
+# nginx config
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 
-# Runtime env injection (envsubst)
+# runtime env injection
 COPY public/env.template.js /usr/share/nginx/html/env.template.js
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

@@ -1,15 +1,10 @@
+import React from "react";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
-export function MarkdownPanel({ title, markdown }: { title: string; markdown: string }) {
+export function MarkdownPanel({ content }: { content: string }) {
   return (
-    <div className="panel">
-      <div className="panelHeader">
-        <div className="panelTitle">{title}</div>
-      </div>
-      <div className="markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
-      </div>
+    <div style={{ lineHeight: 1.5 }}>
+      <ReactMarkdown>{content}</ReactMarkdown>
     </div>
   );
 }

@@ -1,8 +1,10 @@
-export function KeyValue({ label, value }: { label: string; value: any }) {
+import React from "react";
+
+export function KeyValue({ k, v }: { k: string; v: React.ReactNode }) {
   return (
-    <div className="kv">
-      <div className="kvLabel">{label}</div>
-      <div className="kvValue">{value === undefined || value === null || value === "" ? <span className="muted">—</span> : String(value)}</div>
+    <div style={{ marginBottom: 8 }}>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 2 }}>{k}</div>
+      <div>{v}</div>
     </div>
   );
 }

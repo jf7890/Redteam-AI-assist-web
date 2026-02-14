@@ -1,76 +1,31 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
-import type { Session } from "../api/types";
 import { loadConfig } from "../config";
 
-export type HealthStatus = "unknown" | "ok" | "error";
+const STORAGE_KEY = "rtai_webui_v1";
 
-export type AppConfigState = {
+export type StoredConfig = {
   aiBaseUrl: string;
   localAgentUrl: string;
-
-  // Stored as CSV string for easy editing in inputs
   defaultTargetsCsv: string;
-
   policyId: string;
   tenantId: string;
   userId: string;
   agentId: string;
+  objective: string;
 };
 
-export type LocalNote = {
-  id: string;
-  timestamp: string; // ISO
-  text: string;
-};
-
-type StoreState = {
-  config: AppConfigState;
-
-  // Session
+export type AppState = {
+  config: StoredConfig;
   sessionId: string;
-  session?: Session;
-  sessionError?: string;
 
-  // Suggest
-  lastSuggest?: any;
-  lastSuggestAt?: string;
-  suggestError?: string;
-
-  // Agent runs
-  lastAgentResult?: any;
-  lastAgentAt?: string;
-  agentError?: string;
-
-  // Notes entered from UI (local convenience)
-  localNotes: LocalNote[];
-
-  // Live health checks (not persisted)
-  aiHealth: { status: HealthStatus; message?: string; checkedAt?: string };
-  agentHealth: { status: HealthStatus; message?: string; checkedAt?: string };
-
-  // Actions
-  setConfig: (patch: Partial<AppConfigState>) => void;
-  resetConfigToRuntime: () => void;
+  setConfig: (patch: Partial<StoredConfig>) => void;
+  resetConfigToRuntimeDefaults: () => void;
 
   setSessionId: (id: string) => void;
-  setSession: (session?: Session) => void;
-  setSessionError: (msg?: string) => void;
-
-  setLastSuggest: (data?: any) => void;
-  setSuggestError: (msg?: string) => void;
-
-  setLastAgentResult: (data?: any) => void;
-  setAgentError: (msg?: string) => void;
-
-  addLocalNote: (text: string) => LocalNote;
-  clearLocalNotes: () => void;
-
-  setAiHealth: (s: { status: HealthStatus; message?: string }) => void;
-  setAgentHealth: (s: { status: HealthStatus; message?: string }) => void;
+  clearSessionId: () => void;
 };
 
-function runtimeDefaults(): AppConfigState {
+function fromRuntimeDefaults(): StoredConfig {
   const c = loadConfig();
   return {
     aiBaseUrl: c.AI_BASE_URL,
@@ -79,98 +34,70 @@ function runtimeDefaults(): AppConfigState {
     policyId: c.DEFAULT_POLICY_ID,
     tenantId: c.DEFAULT_TENANT_ID,
     userId: c.DEFAULT_USER_ID,
-    agentId: c.DEFAULT_AGENT_ID
+    agentId: c.DEFAULT_AGENT_ID,
+    objective: "Complete the lab objective safely within allowed scope."
   };
 }
 
-export const useAppStore = create<StoreState>()(
-  persist(
-    (set, get) => ({
-      config: runtimeDefaults(),
+function loadFromStorage(): { config: StoredConfig; sessionId: string } | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.config) return null;
+    return {
+      config: parsed.config as StoredConfig,
+      sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : ""
+    };
+  } catch {
+    return null;
+  }
+}
 
-      sessionId: "",
-      session: undefined,
-      sessionError: undefined,
-
-      lastSuggest: undefined,
-      lastSuggestAt: undefined,
-      suggestError: undefined,
-
-      lastAgentResult: undefined,
-      lastAgentAt: undefined,
-      agentError: undefined,
-
-      localNotes: [],
-
-      aiHealth: { status: "unknown" },
-      agentHealth: { status: "unknown" },
-
-      setConfig: (patch) =>
-        set((st) => ({
-          config: { ...st.config, ...patch }
-        })),
-
-      resetConfigToRuntime: () => set({ config: runtimeDefaults() }),
-
-      setSessionId: (id) => set({ sessionId: id.trim() }),
-
-      setSession: (session) => set({ session }),
-
-      setSessionError: (msg) => set({ sessionError: msg }),
-
-      setLastSuggest: (data) =>
-        set({
-          lastSuggest: data,
-          lastSuggestAt: data ? new Date().toISOString() : undefined
-        }),
-
-      setSuggestError: (msg) => set({ suggestError: msg }),
-
-      setLastAgentResult: (data) =>
-        set({
-          lastAgentResult: data,
-          lastAgentAt: data ? new Date().toISOString() : undefined
-        }),
-
-      setAgentError: (msg) => set({ agentError: msg }),
-
-      addLocalNote: (text) => {
-        const note: LocalNote = {
-          id: crypto?.randomUUID?.() ?? `note_${Math.random().toString(16).slice(2)}`,
-          timestamp: new Date().toISOString(),
-          text: text.trim()
-        };
-        set((st) => ({ localNotes: [note, ...st.localNotes] }));
-        return note;
-      },
-
-      clearLocalNotes: () => set({ localNotes: [] }),
-
-      setAiHealth: (s) =>
-        set({
-          aiHealth: { ...s, checkedAt: new Date().toISOString() }
-        }),
-
-      setAgentHealth: (s) =>
-        set({
-          agentHealth: { ...s, checkedAt: new Date().toISOString() }
-        })
-    }),
-    {
-      name: "rtaiassist_webui",
-      version: 1,
-      partialize: (st) => ({
-        config: st.config,
-        sessionId: st.sessionId,
-        localNotes: st.localNotes
-      })
-    }
-  )
-);
+function persist(state: { config: StoredConfig; sessionId: string }) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // ignore
+  }
+}
 
 export function parseTargetsCsv(csv: string): string[] {
-  return csv
+  return (csv || "")
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean);
 }
+
+const initial = (() => {
+  const saved = loadFromStorage();
+  if (saved) return saved;
+  return { config: fromRuntimeDefaults(), sessionId: "" };
+})();
+
+export const useAppStore = create<AppState>((set, get) => ({
+  config: initial.config,
+  sessionId: initial.sessionId,
+
+  setConfig: (patch) => {
+    const next = { ...get().config, ...patch };
+    set({ config: next });
+    persist({ config: next, sessionId: get().sessionId });
+  },
+
+  resetConfigToRuntimeDefaults: () => {
+    const next = fromRuntimeDefaults();
+    set({ config: next });
+    persist({ config: next, sessionId: get().sessionId });
+  },
+
+  setSessionId: (id) => {
+    set({ sessionId: id });
+    persist({ config: get().config, sessionId: id });
+  },
+
+  clearSessionId: () => {
+    set({ sessionId: "" });
+    persist({ config: get().config, sessionId: "" });
+  }
+}));

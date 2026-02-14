@@ -1,235 +1,227 @@
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { makeAiClient } from "../api/ai";
-import type { SuggestRequest } from "../api/types";
+import type { PhaseName, RagFocus, MemoryMode, SuggestResponse } from "../api/types";
 import { JsonPanel } from "../components/JsonPanel";
 import { MarkdownPanel } from "../components/MarkdownPanel";
 import { useAppStore } from "../state/useAppStore";
 
-type NormalizedSuggest = {
-  actions: Array<{ title: string; description?: string; done_criteria?: string }>;
-  rationale?: string;
-  doneCriteria?: string;
-  reportMarkdown?: string;
-};
-
-function toStr(v: any): string | undefined {
-  if (typeof v === "string") return v;
-  if (v === null || v === undefined) return undefined;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  return undefined;
-}
-
-function deepGet(obj: any, path: string[]): any {
-  let cur = obj;
-  for (const k of path) {
-    if (cur && typeof cur === "object" && k in cur) cur = cur[k];
-    else return undefined;
-  }
-  return cur;
-}
-
-function firstOf(obj: any, paths: string[][]): any {
-  for (const p of paths) {
-    const v = deepGet(obj, p);
-    if (v !== undefined) return v;
-  }
-  return undefined;
-}
-
-/**
- * Best-effort normalization. The backend schema may evolve; UI will always show raw JSON.
- */
-function normalizeSuggest(raw: any): NormalizedSuggest {
-  const actionsCandidate =
-    firstOf(raw, [["actions"], ["next_actions"], ["suggested_actions"], ["plan"], ["data", "actions"], ["result", "actions"]]) ??
-    undefined;
-
-  const actions: NormalizedSuggest["actions"] = [];
-
-  if (Array.isArray(actionsCandidate)) {
-    for (const a of actionsCandidate) {
-      if (typeof a === "string") {
-        actions.push({ title: a });
-      } else if (a && typeof a === "object") {
-        const title = toStr(a.title) ?? toStr(a.action) ?? toStr(a.name) ?? "Action";
-        const description = toStr(a.description) ?? toStr(a.desc) ?? toStr(a.details);
-        const done_criteria = toStr(a.done_criteria) ?? toStr(a.doneCriteria);
-        actions.push({ title, description, done_criteria });
-      }
-    }
-  }
-
-  const rationale =
-    toStr(firstOf(raw, [["rationale"], ["reasoning"], ["analysis"], ["data", "rationale"], ["result", "rationale"]])) ?? undefined;
-
-  const doneCriteria =
-    toStr(firstOf(raw, [["done_criteria"], ["doneCriteria"], ["completion_criteria"], ["data", "done_criteria"], ["result", "done_criteria"]])) ??
-    undefined;
-
-  // report template could be under many keys; do best-effort
-  const reportMarkdown =
-    toStr(firstOf(raw, [["report"], ["report_template"], ["template"], ["data", "report"], ["result", "report"], ["output"]])) ?? undefined;
-
-  return { actions, rationale, doneCriteria, reportMarkdown };
-}
+const PHASES: PhaseName[] = ["recon", "enumeration", "hypothesis", "attempt", "post_check", "report"];
+const MEMORY: MemoryMode[] = ["summary", "window", "full"];
+const RAG: RagFocus[] = ["auto", "recon", "report"];
 
 export function SuggestPage() {
-  const { config, sessionId, lastSuggest, lastSuggestAt, suggestError, setSuggestError, setLastSuggest } = useAppStore();
-  const ai = useMemo(() => makeAiClient(config.aiBaseUrl), [config.aiBaseUrl]);
+  const cfg = useAppStore((s) => s.config);
+  const sessionId = useAppStore((s) => s.sessionId);
+
+  const ai = useMemo(() => makeAiClient(cfg.aiBaseUrl), [cfg.aiBaseUrl]);
 
   const [userMessage, setUserMessage] = useState("");
-  const [memoryMode, setMemoryMode] = useState("default");
-  const [historyWindow, setHistoryWindow] = useState(50);
-  const [phaseOverride, setPhaseOverride] = useState("");
-  const [persistPhaseOverride, setPersistPhaseOverride] = useState(false);
-  const [ragFocus, setRagFocus] = useState("");
+  const [memoryMode, setMemoryMode] = useState<MemoryMode>("window");
+  const [historyWindow, setHistoryWindow] = useState<number>(12);
+  const [phaseOverride, setPhaseOverride] = useState<string>("");
+  const [persistOverride, setPersistOverride] = useState(false);
+  const [ragFocus, setRagFocus] = useState<RagFocus>("auto");
 
+  const [resp, setResp] = useState<SuggestResponse | null>(null);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string>("");
 
-  async function getSuggest() {
-    if (!sessionId) return;
+  async function getSuggest(focus?: RagFocus) {
+    if (!sessionId) {
+      setErr("Missing SESSION_ID. Go to Session page → Create/Load session first.");
+      return;
+    }
+    setErr("");
     setBusy(true);
-    setSuggestError(undefined);
-
     try {
-      const body: SuggestRequest = {
-        user_message: userMessage.trim() ? userMessage.trim() : undefined,
+      const body: any = {
         memory_mode: memoryMode,
         history_window: historyWindow,
-        phase_override: phaseOverride.trim() ? phaseOverride.trim() : undefined,
-        persist_phase_override: persistPhaseOverride,
-        rag_focus: ragFocus || undefined
+        persist_phase_override: persistOverride,
+        rag_focus: focus ?? ragFocus
       };
-
-      const res = await ai.suggest(sessionId, body);
-      setLastSuggest(res);
+      if (userMessage.trim()) body.user_message = userMessage.trim();
+      if (phaseOverride) body.phase_override = phaseOverride;
+      const out = await ai.suggest(sessionId, body);
+      setResp(out);
     } catch (e: any) {
-      setSuggestError(e?.message || "Suggest failed");
+      setErr(e?.message || String(e));
+      setResp(null);
     } finally {
       setBusy(false);
     }
   }
 
-  const normalized = lastSuggest ? normalizeSuggest(lastSuggest) : null;
-
   return (
-    <div className="page">
+    <>
       <h2>Suggest</h2>
 
-      {!sessionId ? <div className="warningBox">Set a SESSION_ID in Setup/Session page first.</div> : null}
+      {err && <div className="error">{err}</div>}
 
-      <div className="grid2">
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Suggest Params</div>
-          </div>
-
-          <label className="field">
-            <div className="fieldLabel">User message (optional)</div>
-            <textarea className="textarea" rows={4} value={userMessage} onChange={(e) => setUserMessage(e.target.value)} placeholder="Ask for next step, or provide context…" />
-          </label>
-
-          <div className="grid2">
-            <label className="field">
-              <div className="fieldLabel">Memory mode</div>
-              <select className="select" value={memoryMode} onChange={(e) => setMemoryMode(e.target.value)}>
-                <option value="default">default</option>
-                <option value="full">full</option>
-                <option value="summary">summary</option>
-                <option value="none">none</option>
-              </select>
-            </label>
-
-            <label className="field">
-              <div className="fieldLabel">History window</div>
-              <input className="input" type="number" min={0} value={historyWindow} onChange={(e) => setHistoryWindow(Number(e.target.value))} />
-            </label>
-          </div>
-
-          <label className="field">
-            <div className="fieldLabel">Phase override (optional)</div>
-            <input className="input" value={phaseOverride} onChange={(e) => setPhaseOverride(e.target.value)} placeholder="e.g. recon / exploitation / reporting …" />
-          </label>
-
-          <div className="row">
-            <label className="checkbox">
-              <input type="checkbox" checked={persistPhaseOverride} onChange={(e) => setPersistPhaseOverride(e.target.checked)} /> Persist phase override
-            </label>
-          </div>
-
-          <label className="field">
-            <div className="fieldLabel">RAG focus</div>
-            <select className="select" value={ragFocus} onChange={(e) => setRagFocus(e.target.value)}>
-              <option value="">(default)</option>
-              <option value="report">report</option>
-            </select>
-          </label>
-
-          <button className="btn" onClick={getSuggest} disabled={!sessionId || busy}>
-            {busy ? "Loading…" : "Get Suggest"}
-          </button>
-
-          {suggestError ? <div className="errorBox">{suggestError}</div> : null}
-          {lastSuggestAt ? <div className="muted">Last suggest: {new Date(lastSuggestAt).toLocaleString()}</div> : null}
+      <div className="card">
+        <div className="muted" style={{ marginBottom: 10 }}>
+          POST <span className="mono">/v1/sessions/{sessionId || "<SESSION_ID>"}/suggest</span>
         </div>
 
-        <div className="panel">
-          <div className="panelHeader">
-            <div className="panelTitle">Structured View</div>
+        <div className="row">
+          <div>
+            <label>User message (optional)</label>
+            <textarea value={userMessage} onChange={(e) => setUserMessage(e.target.value)} placeholder="What should I do next?" />
           </div>
+          <div>
+            <label>Controls</label>
+            <div className="row">
+              <div>
+                <label>memory_mode</label>
+                <select value={memoryMode} onChange={(e) => setMemoryMode(e.target.value as MemoryMode)}>
+                  {MEMORY.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>history_window (1–120)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={120}
+                  value={historyWindow}
+                  onChange={(e) => setHistoryWindow(parseInt(e.target.value || "12", 10))}
+                />
+              </div>
+            </div>
 
-          {!normalized ? (
-            <div className="muted">No suggest yet.</div>
-          ) : (
-            <>
-              {normalized.actions.length > 0 ? (
-                <div className="panel">
-                  <div className="panelHeader">
-                    <div className="panelTitle">Actions</div>
-                  </div>
-                  <ol className="list">
-                    {normalized.actions.map((a, idx) => (
-                      <li key={idx} className="listItem">
-                        <div className="listTitle">{a.title}</div>
-                        {a.description ? <div className="muted">{a.description}</div> : null}
-                        {a.done_criteria ? (
-                          <div className="muted" style={{ marginTop: 6 }}>
-                            <b>Done criteria:</b> {a.done_criteria}
-                          </div>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              ) : (
-                <div className="muted">No recognizable “actions” field. See raw JSON below.</div>
-              )}
+            <div className="row" style={{ marginTop: 10 }}>
+              <div>
+                <label>phase_override (optional)</label>
+                <select value={phaseOverride} onChange={(e) => setPhaseOverride(e.target.value)}>
+                  <option value="">(none)</option>
+                  {PHASES.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>rag_focus</label>
+                <select value={ragFocus} onChange={(e) => setRagFocus(e.target.value as RagFocus)}>
+                  {RAG.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
-              {normalized.rationale ? (
-                <div className="panel">
-                  <div className="panelHeader">
-                    <div className="panelTitle">Rationale</div>
-                  </div>
-                  <pre className="codeBlock" style={{ whiteSpace: "pre-wrap" }}>{normalized.rationale}</pre>
-                </div>
-              ) : null}
+            <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+              <input type="checkbox" checked={persistOverride} onChange={(e) => setPersistOverride(e.target.checked)} />
+              persist_phase_override
+            </label>
 
-              {normalized.doneCriteria ? (
-                <div className="panel">
-                  <div className="panelHeader">
-                    <div className="panelTitle">Done criteria</div>
-                  </div>
-                  <pre className="codeBlock" style={{ whiteSpace: "pre-wrap" }}>{normalized.doneCriteria}</pre>
-                </div>
-              ) : null}
-
-              {ragFocus === "report" && normalized.reportMarkdown ? <MarkdownPanel title="Report template (best-effort)" markdown={normalized.reportMarkdown} /> : null}
-            </>
-          )}
+            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+              <button onClick={() => getSuggest()} disabled={busy}>
+                Get Suggest
+              </button>
+              <button className="secondary" onClick={() => getSuggest("report")} disabled={busy}>
+                Get Report Template (rag_focus=report)
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      {lastSuggest ? <JsonPanel title="Raw suggest JSON" data={lastSuggest} /> : null}
-    </div>
+      {resp && (
+        <>
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>
+              Phase: <span className="pill">{resp.phase}</span>{" "}
+              <span className="muted">confidence {Math.round(resp.phase_confidence * 100)}%</span>
+            </h3>
+
+            <div className="row">
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Missing artifacts</div>
+                {(resp.missing_artifacts || []).length === 0 ? (
+                  <div className="muted">—</div>
+                ) : (
+                  <div>
+                    {resp.missing_artifacts.map((x) => (
+                      <span key={x} className="pill">{x}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="muted" style={{ marginBottom: 6 }}>Episode summary</div>
+                <div>{resp.episode_summary}</div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <div className="muted" style={{ marginBottom: 6 }}>Reasoning</div>
+              <div style={{ whiteSpace: "pre-wrap" }}>{resp.reasoning}</div>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Actions</h3>
+            {resp.actions?.length ? (
+              <div className="actions-grid">
+                {resp.actions.map((a, idx) => (
+                  <div key={idx} className="card" style={{ marginBottom: 0 }}>
+                    <b>{a.title}</b>
+                    {a.command && (
+                      <div style={{ marginTop: 8 }}>
+                        <div className="muted">command</div>
+                        <pre className="mono">{a.command}</pre>
+                      </div>
+                    )}
+                    <div style={{ marginTop: 8 }}>
+                      <div className="muted">rationale</div>
+                      <div style={{ whiteSpace: "pre-wrap" }}>{a.rationale}</div>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <div className="muted">done_criteria</div>
+                      <div style={{ whiteSpace: "pre-wrap" }}>{a.done_criteria}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted">No actions.</div>
+            )}
+          </div>
+
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Retrieved context (RAG)</h3>
+            {resp.retrieved_context?.length ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {resp.retrieved_context.map((c, idx) => (
+                  <details key={idx}>
+                    <summary>
+                      <span className="mono">{c.source}</span> · <span className="muted">score {c.score.toFixed(3)}</span>
+                    </summary>
+                    <div style={{ marginTop: 10 }}>
+                      <MarkdownPanel content={c.content} />
+                    </div>
+                  </details>
+                ))}
+              </div>
+            ) : (
+              <div className="muted">No context.</div>
+            )}
+          </div>
+
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Raw JSON</h3>
+            <JsonPanel value={resp} />
+          </div>
+        </>
+      )}
+    </>
   );
 }
