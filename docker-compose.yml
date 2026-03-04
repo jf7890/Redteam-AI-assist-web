@@ -2,6 +2,6 @@ services:
   webui:
     build: .
     ports:
-      - "8080:80"
+      - "8080:8081"
     env_file:
       - .env
